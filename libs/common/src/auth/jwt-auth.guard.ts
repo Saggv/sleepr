@@ -1,12 +1,18 @@
-import { CanActivate, ExecutionContext, Inject, Injectable } from "@nestjs/common";
-import { Observable } from "rxjs";
+import { CanActivate, ExecutionContext, Inject, Injectable, Logger, UnauthorizedException } from "@nestjs/common";
+import { Observable, catchError } from "rxjs";
 import { AUTH_SERVICE } from "../constants/services";
 import { ClientProxy } from "@nestjs/microservices";
-import { tap, map } from 'rxjs';
+import { tap, map, of } from 'rxjs';
+import { Reflector } from "@nestjs/core";
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate{
-    constructor(@Inject(AUTH_SERVICE) private readonly authClient: ClientProxy){}
+    private readonly logger = new Logger(JwtAuthGuard.name);
+
+    constructor(
+        @Inject(AUTH_SERVICE) private readonly authClient: ClientProxy,
+        private readonly reflector: Reflector
+    ){}
 
     canActivate(context: ExecutionContext): boolean | Promise<boolean> | Observable<boolean> {
         const jwt = context.switchToHttp().getRequest().cookies?.Authentication;
@@ -15,11 +21,27 @@ export class JwtAuthGuard implements CanActivate{
             return false;
         };
 
+        const roles = this.reflector.get<string[]>('roles', context.getHandler());
+
         return this.authClient.send('authenticate', {
             Authentication: jwt
         }).pipe(
-            tap(res => context.switchToHttp().getRequest().user = res),
-            map(() => true)
+            tap(res => {
+                if(roles){
+                    for(const role of roles){
+                        if(!res?.roles?.includes(role)){
+                            this.logger.error("The use doesn't have valid roles");
+                            throw new UnauthorizedException();
+                        }
+                    }
+                }
+                context.switchToHttp().getRequest().user = res
+            }),
+            map(() => true),
+            catchError((err)=>{
+                this.logger.error(err);
+                return of(false);
+            })
         )
     }
 }
